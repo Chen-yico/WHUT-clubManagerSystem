@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}注册 - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>注册</h2>
+		<form method="post" action="{{ url_for('do_register') }}">
+			<div>
+				<label>用户名</label>
+				<input class="input" name="username" required />
+			</div>
+			<div style="margin-top:12px;">
+				<label>密码</label>
+				<input class="input" type="password" name="password" required />
+			</div>
+			<div style="margin-top:12px;">
+				<button class="button primary" type="submit">注册</button>
+				<a class="button ghost" href="{{ url_for('login') }}">已有账号？去登录</a>
+			</div>
+		</form>
+	</div>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+

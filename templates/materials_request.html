@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}提交物资申请{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>提交物资申请</h2>
+		<form method="post" action="{{ url_for('create_material_request', event_id=event_id) }}">
+			<div class="row">
+				<div>
+					<label>物资名称</label>
+					<input class="input" name="item_name" required />
+				</div>
+				<div>
+					<label>数量</label>
+					<input class="input" name="quantity" type="number" min="1" value="1" required />
+				</div>
+			</div>
+			<div style="margin-top:12px;">
+				<label>备注</label>
+				<textarea class="textarea" name="note" rows="3"></textarea>
+			</div>
+			<div style="margin-top:12px;">
+				<button class="button primary" type="submit">提交</button>
+				<a class="button ghost" href="{{ url_for('event_detail', event_id=event_id) }}">返回活动</a>
+			</div>
+		</form>
+	</div>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+

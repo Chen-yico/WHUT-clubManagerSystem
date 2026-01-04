@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}发布招新公告 - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>发布招新公告（{{ club.name }}）</h2>
+		<form method="post" action="{{ url_for('create_recruitment') }}">
+			<input type="hidden" name="club_id" value="{{ club.id }}" />
+			<div class="form-group">
+				<label>标题 *</label>
+				<input class="input" name="title" required />
+			</div>
+			<div class="form-group">
+				<label>内容</label>
+				<textarea class="textarea" name="content" rows="6" placeholder="可填写报名要求、时间地点等"></textarea>
+			</div>
+			<div class="form-group">
+				<label>报名结束时间（可选）</label>
+				<input class="input" name="end_time" type="text" placeholder="格式：2025-12-31 或 2025-12-31 23:59" />
+				<small style="color: var(--muted);">到达结束时间后，报名将自动关闭</small>
+			</div>
+			<div class="form-actions">
+				<button class="button primary" type="submit">发布</button>
+				<a class="button ghost" href="{{ url_for('list_clubs') }}">返回</a>
+			</div>
+		</form>
+	</div>
+{% endblock %}
+
+
+

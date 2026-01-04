@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block title %}编辑成员{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>编辑成员</h2>
+		<form method="post" action="{{ url_for('edit_member', member_id=member.id) }}">
+			<div class="row">
+				<div>
+					<label>姓名</label>
+					<input class="input" name="name" value="{{ member.name }}" required />
+				</div>
+				<div>
+					<label>职务/角色</label>
+					<input class="input" name="role" value="{{ member.role }}" />
+				</div>
+			</div>
+			<div style="margin-top:12px;">
+				<button class="button primary" type="submit">保存</button>
+				<a class="button ghost" href="{{ url_for('list_members', club_id=member.club_id) }}">返回成员列表</a>
+			</div>
+		</form>
+	</div>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+

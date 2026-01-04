@@ -1,0 +1,64 @@
+{% extends 'base.html' %}
+{% block title %}财务报表 - {{ club.name }}{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>{{ club.name }} - 财务报表</h2>
+		<form method="get" action="{{ url_for('finance_report', club_id=club.id) }}">
+			<div class="row">
+				<div>
+					<label>结束日期（可选）</label>
+					<input class="input" name="end" type="date" value="{{ end }}" />
+				</div>
+			</div>
+			<div style="margin-top:12px;">
+				<button class="button primary" type="submit">筛选</button>
+				<a class="button ghost" href="{{ url_for('finance_report', club_id=club.id) }}">清除筛选</a>
+				<a class="button ghost" href="{{ url_for('finance_dashboard', club_id=club.id) }}">返回财务总览</a>
+			</div>
+		</form>
+	</div>
+
+	<div class="card">
+		<h3>财务汇总{% if end %}（截止到 {{ end }}）{% endif %}</h3>
+		<div style="background: #f0f9ff; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
+			<p style="margin: 8px 0;"><strong>{% if end %}截止到 {{ end }} 的{% else %}总{% endif %}审批经费：</strong><span style="color: #16a34a; font-size: 18px; font-weight: bold;">{{ '%.2f'|format(approved or 0) }}</span> 元</p>
+			<p style="margin: 8px 0;"><strong>{% if end %}截止到 {{ end }} 的{% else %}总{% endif %}支出金额：</strong><span style="color: #dc2626; font-size: 18px; font-weight: bold;">{{ '%.2f'|format(all_expenses_total or 0) }}</span> 元</p>
+			<p style="margin: 8px 0;"><strong>{% if end %}截止到 {{ end }} 的{% endif %}剩余额度：</strong><span style="color: #2563eb; font-size: 20px; font-weight: bold;">{{ '%.2f'|format(balance) }}</span> 元</p>
+			{% if not end %}
+			<p style="margin: 8px 0; font-size: 12px; color: #6b7280;">（实时可用额度：{{ '%.2f'|format(club.available_amount or 0) }} 元）</p>
+			{% endif %}
+		</div>
+
+		<h3>支出明细{% if end %}（截止到 {{ end }}）{% endif %}</h3>
+		{% if end %}
+		<p style="color: #6b7280; font-size: 14px; margin-bottom: 12px;">
+			显示截止到 {{ end }} 的支出记录
+		</p>
+		{% endif %}
+		<table class="table">
+			<thead>
+				<tr><th>标题</th><th>金额</th><th>备注</th><th>支出日期</th>{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}<th>操作</th>{% endif %}</tr>
+			</thead>
+			<tbody>
+				{% for r in rows %}
+				<tr>
+					<td>{{ r.title }}</td>
+					<td>{{ '%.2f'|format(r.amount) }}</td>
+					<td>{{ r.note }}</td>
+					<td>{{ r.spent_at or '-' }}</td>
+					{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}
+					<td>
+						<form method="post" action="{{ url_for('delete_expense', expense_id=r.id) }}" style="display:inline;" onsubmit="return confirm('确认删除该支出记录？删除后将恢复可用金额。');">
+							<button class="button danger" type="submit">删除</button>
+						</form>
+					</td>
+					{% endif %}
+				</tr>
+				{% else %}
+				<tr><td colspan="{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}5{% else %}4{% endif %}">该时间范围内无支出</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+		<p style="margin-top: 16px;"><strong>{% if end %}截止到 {{ end }} 的{% endif %}支出合计：</strong>{{ '%.2f'|format(total) }} 元</p>
+	</div>
+{% endblock %}

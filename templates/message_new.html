@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}发布消息 - {{ club.name }} - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>发布消息 - {{ club.name }}</h2>
+		<form method="post" action="{{ url_for('create_message', club_id=club.id) }}">
+			<div class="form-group">
+				<label for="title">消息标题 *</label>
+				<input type="text" id="title" name="title" required>
+			</div>
+			<div class="form-group">
+				<label for="content">消息内容</label>
+				<textarea id="content" name="content" rows="6" placeholder="请输入消息内容..."></textarea>
+			</div>
+			<div class="form-group">
+				<label class="checkbox-label">
+					<input type="checkbox" name="is_important" value="1">
+					标记为重要消息
+				</label>
+			</div>
+			<div class="form-actions">
+				<button type="submit" class="button primary">发布消息</button>
+				<a class="button ghost" href="{{ url_for('list_club_messages', club_id=club.id) }}">取消</a>
+			</div>
+		</form>
+	</div>
+{% endblock %}

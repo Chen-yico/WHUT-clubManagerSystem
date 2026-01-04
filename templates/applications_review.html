@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}报名审核 - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>报名审核：{{ rec.title }}</h2>
+		<p>所属社团ID：{{ rec.club_id }} | 公告ID：{{ rec.id }}</p>
+		<table class="table">
+			<thead>
+				<tr><th>姓名</th><th>联系方式</th><th>期望角色</th><th>备注</th><th>状态</th><th>操作</th></tr>
+			</thead>
+			<tbody>
+				{% for a in applications %}
+				<tr>
+					<td>{{ a.applicant_name }}</td>
+					<td>{{ a.contact }}</td>
+					<td>{{ a.desired_role }}</td>
+					<td>{{ a.note }}</td>
+					<td>{{ a.status }}</td>
+					<td>
+						<form method="post" action="{{ url_for('decide_application', app_id=a.id, action='approve') }}" style="display:inline;">
+							<button class="button primary" type="submit">通过</button>
+						</form>
+						<form method="post" action="{{ url_for('decide_application', app_id=a.id, action='reject') }}" style="display:inline;">
+							<button class="button danger" type="submit">拒绝</button>
+						</form>
+					</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="6">暂无报名</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+		<p>
+			<a class="button ghost" href="{{ url_for('recruitment_detail', rid=rec.id) }}">返回公告</a>
+		</p>
+	</div>
+{% endblock %}

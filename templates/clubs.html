@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% block title %}社团列表 - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>社团列表</h2>
+		<p>
+			{% if g.user %}
+				<a class="button primary" href="{{ url_for('new_club_form') }}">+ 提交社团创建申请</a>
+			{% else %}
+				<a class="button ghost" href="{{ url_for('login') }}">登录后可提交创建申请</a>
+			{% endif %}
+		</p>
+		<table class="table">
+			<thead>
+				<tr><th>ID</th><th>名称</th><th>简介</th><th>状态</th><th>所有者</th><th>操作</th></tr>
+			</thead>
+			<tbody>
+				{% for c in clubs %}
+				<tr>
+					<td>{{ c.id }}</td>
+					<td>
+						{% if c.status == 'approved' %}
+							<a href="{{ url_for('list_members', club_id=c.id) }}">{{ c.name }}</a>
+						{% else %}
+							{{ c.name }}
+						{% endif %}
+					</td>
+					<td>{{ c.description or '-' }}</td>
+					<td>
+						{% if c.status == 'approved' %}<span class="tag ok">已通过</span>{% else %}<span class="tag pending">待审批</span>{% endif %}
+					</td>
+					<td>{{ c.owner_name or '-' }}</td>
+					<td class="actions">
+						{% if g.user and (g.user.is_admin or c.owner_id == g.user.id) %}
+							<a class="button ghost" href="{{ url_for('edit_club_form', club_id=c.id) }}">编辑</a>
+							{% if c.status == 'approved' %}
+								<a class="button ghost" href="{{ url_for('new_recruitment_form', club_id=c.id) }}">发布公告</a>
+								<a class="button ghost" href="{{ url_for('new_event_form', club_id=c.id) }}">发布活动</a>
+								<a class="button ghost" href="{{ url_for('list_club_messages', club_id=c.id) }}">消息管理</a>
+								<a class="button ghost" href="{{ url_for('review_materials', club_id=c.id) }}">物资审核</a>
+								<a class="button primary" href="{{ url_for('finance_dashboard', club_id=c.id) }}">财务</a>
+							{% endif %}
+							<form method="post" action="{{ url_for('delete_club', club_id=c.id) }}" style="display:inline;" onsubmit="return confirm('确认删除该社团及成员？');">
+								<button class="button danger" type="submit">删除</button>
+							</form>
+						{% endif %}
+						{% if g.user and g.user.is_admin %}
+							{% if c.status == 'pending' %}
+								<form method="post" action="{{ url_for('approve_club', club_id=c.id) }}" style="display:inline;">
+									<button class="button primary" type="submit">审批通过</button>
+								</form>
+								<form method="post" action="{{ url_for('reject_club', club_id=c.id) }}" style="display:inline;" onsubmit="return confirm('确认拒绝该社团申请？拒绝后将删除该申请记录。');">
+									<button class="button danger" type="submit">拒绝</button>
+								</form>
+							{% endif %}
+							<a class="button ghost" href="{{ url_for('index') }}#events-review">活动审批</a>
+						{% endif %}
+					</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="6">暂无社团，点击“提交社团创建申请”。</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+{% endblock %}
+
+

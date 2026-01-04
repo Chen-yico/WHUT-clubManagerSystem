@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+{% block title %}{{ club.name }} - 社团消息 - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<div class="club-header">
+			<h2>{{ club.name }} - 社团消息</h2>
+			{% if can_manage %}
+			<a class="button primary" href="{{ url_for('new_message_form', club_id=club.id) }}">发布消息</a>
+			{% endif %}
+		</div>
+		
+		{% if messages %}
+			<div class="message-list">
+				{% for message in messages %}
+				<div class="message-item {% if message.is_important %}important{% endif %}">
+					<div class="message-header">
+						<h3>
+							{% if message.is_important %}
+								<span class="tag important">重要</span>
+							{% endif %}
+							<a href="{{ url_for('message_detail', message_id=message.id) }}">{{ message.title }}</a>
+						</h3>
+						<div class="message-meta">
+							<span class="time">{{ message.created_at }}</span>
+							{% if can_manage %}
+							<form method="post" action="{{ url_for('delete_message', message_id=message.id) }}" style="display:inline;" onsubmit="return confirm('确定要删除这条消息吗？')">
+								<button type="submit" class="button danger small">删除</button>
+							</form>
+							{% endif %}
+						</div>
+					</div>
+					{% if message.content %}
+					<div class="message-preview">
+						{{ message.content[:100] }}{% if message.content|length > 100 %}...{% endif %}
+					</div>
+					{% endif %}
+				</div>
+				{% endfor %}
+			</div>
+		{% else %}
+			<p class="empty-state">该社团暂无消息</p>
+		{% endif %}
+		
+		<div class="page-actions">
+			<a class="button ghost" href="{{ url_for('list_clubs') }}">返回社团列表</a>
+			<a class="button ghost" href="{{ url_for('list_messages') }}">查看所有消息</a>
+		</div>
+	</div>
+{% endblock %}
+
+
+

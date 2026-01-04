@@ -1,0 +1,134 @@
+{% extends 'base.html' %}
+{% block title %}首页 - 武汉理工社团管理{% endblock %}
+{% block content %}
+	<div class="welcome-banner">
+		<h1>欢迎使用武汉理工社团管理系统</h1>
+		<p>高效管理社团事务，连接校园社团生活</p>
+	</div>
+
+	<!-- 近期活动 -->
+	<div class="card">
+		<div class="card-header-with-icon">
+			<h2>📅 近期活动</h2>
+		</div>
+		<table class="table">
+			<thead>
+				<tr><th width="30%">活动名称</th><th width="25%">时间</th><th width="15%">地点</th><th width="15%">社团</th><th width="15%">操作</th></tr>
+			</thead>
+			<tbody>
+				{% for e in events %}
+				<tr>
+					<td><a href="{{ url_for('event_detail', event_id=e.id) }}">{{ e.title }}</a></td>
+					<td>{{ e.start_time }}</td>
+					<td>{{ e.location }}</td>
+					<td>{{ e.club_name }}</td>
+					<td>
+						<a class="button primary small" href="{{ url_for('event_detail', event_id=e.id) }}">查看详情</a>
+					</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="5" style="text-align: center; color: var(--muted);">暂无已审批的活动</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+
+	<!-- 两列布局 -->
+	<div class="row">
+		<!-- 左列：招新公告 -->
+		<div>
+			<div class="card">
+				<div class="card-header-with-icon">
+					<h2>🎓 最新招新</h2>
+				</div>
+				<table class="table">
+					<thead>
+						<tr><th>标题</th><th>社团</th><th>状态</th><th>操作</th></tr>
+					</thead>
+					<tbody>
+						{% for r in recruitments %}
+						<tr>
+							<td><a href="{{ url_for('recruitment_detail', rid=r.id) }}">{{ r.title }}</a></td>
+							<td>{{ r.club_name }}</td>
+							<td>{% if r.is_open %}<span class="tag ok">报名中</span>{% else %}<span class="tag pending">已关闭</span>{% endif %}</td>
+							<td>
+								<a class="button primary small" href="{{ url_for('recruitment_detail', rid=r.id) }}">查看</a>
+							</td>
+						</tr>
+						{% else %}
+						<tr><td colspan="4" style="text-align: center; color: var(--muted);">暂无招新公告</td></tr>
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+
+		<!-- 右列：社团消息 -->
+		<div>
+			<div class="card">
+				<div class="card-header-with-icon">
+					<h2>📢 社团消息</h2>
+				</div>
+				<table class="table">
+					<thead>
+						<tr><th>标题</th><th>社团</th><th>操作</th></tr>
+					</thead>
+					<tbody>
+						{% for msg in latest_messages %}
+						<tr>
+							<td>
+								{% if msg.is_important %}
+									<span class="tag important">重要</span>
+								{% endif %}
+								<a href="{{ url_for('message_detail', message_id=msg.id) }}">{{ msg.title }}</a>
+							</td>
+							<td>{{ msg.club_name }}</td>
+							<td>
+								<a class="button primary small" href="{{ url_for('message_detail', message_id=msg.id) }}">查看</a>
+							</td>
+						</tr>
+						{% else %}
+						<tr><td colspan="3" style="text-align: center; color: var(--muted);">暂无社团消息</td></tr>
+						{% endfor %}
+					</tbody>
+				</table>
+				<div class="card-footer">
+					<a class="button ghost" href="{{ url_for('list_messages') }}">查看所有消息 →</a>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- 管理员专属：待审批活动 -->
+	{% if g.user and g.user.is_admin %}
+	<div class="card admin-section" id="events-review">
+		<div class="card-header-with-icon">
+			<h2>⚙️ 待审批活动</h2>
+		</div>
+		<table class="table">
+			<thead>
+				<tr><th width="30%">活动名称</th><th width="20%">社团</th><th width="25%">时间</th><th width="15%">地点</th><th width="10%">操作</th></tr>
+			</thead>
+			<tbody>
+				{% for e in pending_events %}
+				<tr>
+					<td>{{ e.title }}</td>
+					<td>{{ e.club_name }}</td>
+					<td>{{ e.start_time }}</td>
+					<td>{{ e.location }}</td>
+					<td>
+						<form method="post" action="{{ url_for('approve_event', event_id=e.id) }}" style="display:inline;">
+							<button class="button primary small" type="submit">通过</button>
+						</form>
+					</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="5" style="text-align: center; color: var(--muted);">暂无待审批活动</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	{% endif %}
+{% endblock %}
+
+

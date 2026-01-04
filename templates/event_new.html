@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+{% block title %}发布活动 - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>发布活动（{{ club.name }}）</h2>
+		<form method="post" action="{{ url_for('create_event') }}">
+			<input type="hidden" name="club_id" value="{{ club.id }}" />
+			<div>
+				<label>标题</label>
+				<input class="input" name="title" required />
+			</div>
+			<div style="margin-top:12px;">
+				<label>时间</label>
+				<input class="input" name="start_time" placeholder="如：2025-10-12 14:00" />
+			</div>
+			<div style="margin-top:12px;">
+				<label>地点</label>
+				<input class="input" name="location" placeholder="如：学生活动中心A101" />
+			</div>
+			<div style="margin-top:12px;">
+				<label>内容</label>
+				<textarea class="textarea" name="content" rows="6"></textarea>
+			</div>
+			<div style="margin-top:12px;">
+				<button class="button primary" type="submit">提交审批</button>
+				<a class="button ghost" href="{{ url_for('list_clubs') }}">返回</a>
+			</div>
+		</form>
+	</div>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+

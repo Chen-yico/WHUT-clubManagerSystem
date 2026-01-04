@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}{{ message.title }} - 高校社团管理{% endblock %}
+{% block content %}
+	<div class="card">
+		<div class="message-detail">
+			<div class="message-header">
+				<h2>
+					{% if message.is_important %}
+						<span class="tag important">重要</span>
+					{% endif %}
+					{{ message.title }}
+				</h2>
+				<div class="message-meta">
+					<span class="club-name">发布社团：{{ message.club_name }}</span>
+					<span class="time">发布时间：{{ message.created_at }}</span>
+				</div>
+			</div>
+			{% if message.content %}
+			<div class="message-content">
+				{{ message.content|replace('\n', '<br>')|safe }}
+			</div>
+			{% endif %}
+			<div class="message-actions">
+				<a class="button ghost" href="{{ url_for('list_messages') }}">返回消息列表</a>
+				<a class="button ghost" href="{{ url_for('list_club_messages', club_id=message.club_id) }}">查看社团消息</a>
+			</div>
+		</div>
+	</div>
+{% endblock %}
+
+
+

@@ -1,0 +1,1431 @@
+import os
+import sqlite3
+from pathlib import Path
+from datetime import datetime
+
+from flask import Flask, g, render_template, request, redirect, url_for, flash, session
+from werkzeug.security import generate_password_hash, check_password_hash
+
+
+DATABASE_PATH = Path("instance") / "clubmgr.db"
+
+
+def create_app() -> Flask:
+    app = Flask(__name__, instance_relative_config=True)
+    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret")
+    app.config["DATABASE"] = str(DATABASE_PATH)
+
+    # Ensure the instance folder exists
+    os.makedirs(app.instance_path, exist_ok=True)
+
+    @app.before_request
+    def before_request():
+        g.db = get_db(app.config["DATABASE"]) 
+        g.user = None
+        user_id = session.get("user_id")
+        if user_id:
+            g.user = g.db.execute("SELECT id, username, is_admin FROM users WHERE id = ?", (user_id,)).fetchone()
+
+    @app.teardown_request
+    def teardown_request(exception):  # type: ignore[unused-argument]
+        db = g.pop("db", None)
+        if db is not None:
+            db.close()
+
+    with app.app_context():
+        init_db(app.config["DATABASE"])  # Create tables on first run and migrate if needed
+
+    register_routes(app)
+    return app
+
+
+def get_db(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    cols = [r[1] for r in cur.fetchall()]
+    return column in cols
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+    return cur.fetchone() is not None
+
+
+def init_db(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        # Ensure base tables
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS clubs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                club_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                role TEXT DEFAULT '成员',
+                FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+            );
+            """
+        )
+        # Migrations: add columns if missing on clubs
+        if not _column_exists(conn, "clubs", "owner_id"):
+            conn.execute("ALTER TABLE clubs ADD COLUMN owner_id INTEGER")
+        if not _column_exists(conn, "clubs", "status"):
+            conn.execute("ALTER TABLE clubs ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+        if not _column_exists(conn, "clubs", "available_amount"):
+            conn.execute("ALTER TABLE clubs ADD COLUMN available_amount REAL NOT NULL DEFAULT 0")
+
+        # Recruitment tables
+        if not _table_exists(conn, "recruitments"):
+            conn.execute(
+                """
+                CREATE TABLE recruitments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    club_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_open INTEGER NOT NULL DEFAULT 1,
+                    end_time TEXT DEFAULT '', -- YYYY-MM-DD HH:MM
+                    FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+                );
+                """
+            )
+        else:
+            if not _column_exists(conn, "recruitments", "end_time"):
+                conn.execute("ALTER TABLE recruitments ADD COLUMN end_time TEXT DEFAULT ''")
+        if not _table_exists(conn, "applications"):
+            conn.execute(
+                """
+                CREATE TABLE applications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recruitment_id INTEGER NOT NULL,
+                    applicant_name TEXT NOT NULL,
+                    contact TEXT NOT NULL,
+                    note TEXT DEFAULT '',
+                    desired_role TEXT DEFAULT '成员',
+                    status TEXT NOT NULL DEFAULT 'pending', -- pending/approved/rejected
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (recruitment_id) REFERENCES recruitments(id) ON DELETE CASCADE
+                );
+                """
+            )
+        else:
+            if not _column_exists(conn, "applications", "desired_role"):
+                conn.execute("ALTER TABLE applications ADD COLUMN desired_role TEXT DEFAULT '成员'")
+
+        # Events tables
+        if not _table_exists(conn, "events"):
+            conn.execute(
+                """
+                CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    club_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    start_time TEXT DEFAULT '',
+                    location TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending', -- pending/approved
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    capacity INTEGER NOT NULL DEFAULT 0, -- 0 表示不限
+                    deadline TEXT DEFAULT '', -- YYYY-MM-DD HH:MM
+                    is_open INTEGER NOT NULL DEFAULT 1,
+                    FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+                );
+                """
+            )
+        else:
+            if not _column_exists(conn, "events", "capacity"):
+                conn.execute("ALTER TABLE events ADD COLUMN capacity INTEGER NOT NULL DEFAULT 0")
+            if not _column_exists(conn, "events", "deadline"):
+                conn.execute("ALTER TABLE events ADD COLUMN deadline TEXT DEFAULT ''")
+            if not _column_exists(conn, "events", "is_open"):
+                conn.execute("ALTER TABLE events ADD COLUMN is_open INTEGER NOT NULL DEFAULT 1")
+        if not _table_exists(conn, "event_signups"):
+            conn.execute(
+                """
+                CREATE TABLE event_signups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    contact TEXT NOT NULL,
+                    note TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+                );
+                """
+            )
+        if not _table_exists(conn, "material_requests"):
+            conn.execute(
+                """
+                CREATE TABLE material_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 1,
+                    note TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending', -- pending/approved/rejected
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+                );
+                """
+            )
+        # Finance tables
+        if not _table_exists(conn, "finance_requests"):
+            conn.execute(
+                """
+                CREATE TABLE finance_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    club_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    reason TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending', -- pending/approved/rejected
+                    request_date TEXT DEFAULT '', -- YYYY-MM-DD
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+                );
+                """
+            )
+        else:
+            # Migration: add request_date column if missing
+            if not _column_exists(conn, "finance_requests", "request_date"):
+                conn.execute("ALTER TABLE finance_requests ADD COLUMN request_date TEXT DEFAULT ''")
+        if not _table_exists(conn, "expenses"):
+            conn.execute(
+                """
+                CREATE TABLE expenses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    club_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    note TEXT DEFAULT '',
+                    spent_at TEXT DEFAULT '', -- YYYY-MM-DD
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+                );
+                """
+            )
+        # Ratings tables
+        if not _table_exists(conn, "event_ratings"):
+            conn.execute(
+                """
+                CREATE TABLE event_ratings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL,
+                    rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+                    note TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+                );
+                """
+            )
+        if not _table_exists(conn, "club_ratings"):
+            conn.execute(
+                """
+                CREATE TABLE club_ratings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    club_id INTEGER NOT NULL,
+                    member_name TEXT NOT NULL,
+                    rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+                    note TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+                );
+                """
+            )
+        # Messages table
+        if not _table_exists(conn, "messages"):
+            conn.execute(
+                """
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    club_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_important INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+                );
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# -------------------- Helpers --------------------
+
+def login_required():
+    if not g.user:
+        flash("请先登录", "error")
+        return redirect(url_for("login", next=request.path))
+    return None
+
+
+def admin_required():
+    if not g.user or not g.user["is_admin"]:
+        flash("无权限，需要管理员", "error")
+        return redirect(url_for("index"))
+    return None
+
+
+def _club_guard_for_owner(club_id: int) -> tuple[sqlite3.Row | None, str | None]:
+    club = g.db.execute("SELECT * FROM clubs WHERE id = ?", (club_id,)).fetchone()
+    if not club:
+        return None, "社团不存在"
+    if club["status"] != "approved":
+        return None, "社团未审批通过"
+    if not (g.user and (g.user["is_admin"] or club["owner_id"] == g.user["id"])):
+        return None, "无权限（需所有者或管理员）"
+    return club, None
+
+
+def _parse_deadline(s: str) -> datetime | None:
+    s = (s or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _check_and_close_expired_recruitments(db) -> None:
+    """检查并自动关闭已过期的招新公告"""
+    now = datetime.now()
+    expired = db.execute(
+        "SELECT id, end_time FROM recruitments WHERE is_open = 1 AND end_time != ''",
+    ).fetchall()
+    for rec in expired:
+        end_time = _parse_deadline(rec["end_time"])
+        if end_time and now > end_time:
+            db.execute("UPDATE recruitments SET is_open = 0 WHERE id = ?", (rec["id"],))
+    db.commit()
+
+
+# -------------------- Routes --------------------
+
+def register_routes(app: Flask) -> None:
+    @app.get("/")
+    def index():
+        # 自动检查并关闭过期的招新公告
+        _check_and_close_expired_recruitments(g.db)
+        # latest events (approved)
+        events = g.db.execute(
+            """
+            SELECT e.id, e.title, e.start_time, e.location, e.capacity, e.deadline, e.is_open, c.name AS club_name
+            FROM events e
+            JOIN clubs c ON e.club_id = c.id
+            WHERE e.status = 'approved'
+            ORDER BY e.id DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        # latest recruitments (open + approved clubs)
+        recs = g.db.execute(
+            """
+            SELECT r.id, r.title, r.created_at, r.is_open, c.name AS club_name, c.id AS club_id
+            FROM recruitments r
+            JOIN clubs c ON r.club_id = c.id
+            WHERE r.is_open = 1 AND c.status = 'approved'
+            ORDER BY r.id DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        # latest messages
+        latest_messages = g.db.execute(
+            """
+            SELECT m.id, m.title, m.created_at, m.is_important, c.name AS club_name
+            FROM messages m
+            JOIN clubs c ON m.club_id = c.id
+            WHERE c.status = 'approved'
+            ORDER BY m.is_important DESC, m.created_at DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        pending_events = []
+        if g.user and g.user["is_admin"]:
+            pending_events = g.db.execute(
+                """
+                SELECT e.id, e.title, e.start_time, e.location, c.name AS club_name
+                FROM events e
+                JOIN clubs c ON e.club_id = c.id
+                WHERE e.status = 'pending'
+                ORDER BY e.id DESC
+                LIMIT 10
+                """
+            ).fetchall()
+        return render_template("index.html", events=events, recruitments=recs, pending_events=pending_events, latest_messages=latest_messages)
+
+    # ---------- Auth ----------
+    @app.get("/register")
+    def register():
+        return render_template("register.html")
+
+    @app.post("/register")
+    def do_register():
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+        if not username or not password:
+            flash("用户名和密码不能为空", "error")
+            return redirect(url_for("register"))
+        try:
+            g.db.execute(
+                "INSERT INTO users(username, password_hash) VALUES(?, ?)",
+                (username, generate_password_hash(password)),
+            )
+            g.db.commit()
+            flash("注册成功，请登录", "success")
+            return redirect(url_for("login"))
+        except sqlite3.IntegrityError:
+            flash("用户名已存在", "error")
+            return redirect(url_for("register"))
+
+    @app.get("/login")
+    def login():
+        return render_template("login.html")
+
+    @app.post("/login")
+    def do_login():
+        username = (request.form.get("username") or "").strip()
+        password = (request.form.get("password") or "").strip()
+        user = g.db.execute("SELECT id, username, password_hash, is_admin FROM users WHERE username = ?", (username,)).fetchone()
+        if not user or not check_password_hash(user["password_hash"], password):
+            flash("用户名或密码不正确", "error")
+            return redirect(url_for("login"))
+        session["user_id"] = user["id"]
+        flash("登录成功", "success")
+        next_url = request.args.get("next")
+        return redirect(next_url or url_for("index"))
+
+    @app.post("/logout")
+    def logout():
+        session.pop("user_id", None)
+        flash("已退出登录", "success")
+        return redirect(url_for("index"))
+
+    # ---------- Clubs ----------
+    @app.get("/clubs")
+    def list_clubs():
+        rows = g.db.execute(
+            "SELECT c.id, c.name, c.description, c.status, u.username AS owner_name, u.id AS owner_id FROM clubs c LEFT JOIN users u ON c.owner_id = u.id ORDER BY c.id DESC"
+        ).fetchall()
+        return render_template("clubs.html", clubs=rows)
+
+    @app.get("/clubs/new")
+    def new_club_form():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        return render_template("club_form.html")
+
+    @app.post("/clubs")
+    def create_club():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        name = (request.form.get("name") or "").strip()
+        description = (request.form.get("description") or "").strip()
+        if not name:
+            flash("社团名称不能为空", "error")
+            return redirect(url_for("new_club_form"))
+        try:
+            g.db.execute(
+                "INSERT INTO clubs(name, description, owner_id, status) VALUES(?, ?, ?, 'pending')",
+                (name, description, g.user["id"]),
+            )
+            g.db.commit()
+            flash("已提交创建申请，等待审批（示例中由管理员账号审批）", "success")
+        except sqlite3.IntegrityError:
+            flash("社团名称已存在", "error")
+        return redirect(url_for("list_clubs"))
+
+    @app.post("/clubs/<int:club_id>/approve")
+    def approve_club(club_id: int):
+        need_admin = admin_required()
+        if need_admin:
+            return need_admin
+        g.db.execute("UPDATE clubs SET status = 'approved' WHERE id = ?", (club_id,))
+        g.db.commit()
+        flash("已审批通过", "success")
+        return redirect(url_for("list_clubs"))
+
+    @app.post("/clubs/<int:club_id>/reject")
+    def reject_club(club_id: int):
+        need_admin = admin_required()
+        if need_admin:
+            return need_admin
+        club = g.db.execute("SELECT id, status FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if club["status"] != "pending":
+            flash("该社团已处理，无法拒绝", "error")
+            return redirect(url_for("list_clubs"))
+        g.db.execute("DELETE FROM clubs WHERE id = ?", (club_id,))
+        g.db.commit()
+        flash("已拒绝该社团申请", "success")
+        return redirect(url_for("list_clubs"))
+
+    @app.get("/clubs/<int:club_id>/edit")
+    def edit_club_form(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT * FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限编辑该社团", "error")
+            return redirect(url_for("list_clubs"))
+        return render_template("club_edit.html", club=club)
+
+    @app.post("/clubs/<int:club_id>/edit")
+    def edit_club(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT * FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限编辑该社团", "error")
+            return redirect(url_for("list_clubs"))
+        name = (request.form.get("name") or "").strip()
+        description = (request.form.get("description") or "").strip()
+        if not name:
+            flash("社团名称不能为空", "error")
+            return redirect(url_for("edit_club_form", club_id=club_id))
+        try:
+            g.db.execute("UPDATE clubs SET name = ?, description = ? WHERE id = ?", (name, description, club_id))
+            g.db.commit()
+            flash("已更新社团信息", "success")
+        except sqlite3.IntegrityError:
+            flash("社团名称已存在", "error")
+        return redirect(url_for("list_clubs"))
+
+    @app.post("/clubs/<int:club_id>/delete")
+    def delete_club(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT owner_id FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限删除该社团", "error")
+            return redirect(url_for("list_clubs"))
+        g.db.execute("DELETE FROM clubs WHERE id = ?", (club_id,))
+        g.db.commit()
+        flash("已删除社团", "success")
+        return redirect(url_for("list_clubs"))
+
+    # ---------- Recruitments (RESTORED) ----------
+    @app.get("/recruit/new")
+    def new_recruitment_form():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club_id = int(request.args.get("club_id", "0") or 0)
+        if not club_id:
+            flash("缺少 club_id", "error")
+            return redirect(url_for("list_clubs"))
+        club, err = _club_guard_for_owner(club_id)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("list_clubs"))
+        return render_template("recruit_new.html", club=club)
+
+    @app.post("/recruit")
+    def create_recruitment():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club_id = int(request.form.get("club_id") or 0)
+        club, err = _club_guard_for_owner(club_id)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("list_clubs"))
+        title = (request.form.get("title") or "").strip()
+        content = (request.form.get("content") or "").strip()
+        end_time = (request.form.get("end_time") or "").strip()
+        # 验证结束时间格式
+        if end_time and not _parse_deadline(end_time):
+            flash("结束时间格式应为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM", "error")
+            return redirect(url_for("new_recruitment_form", club_id=club_id))
+        if not title:
+            flash("标题不能为空", "error")
+            return redirect(url_for("new_recruitment_form", club_id=club_id))
+        g.db.execute("INSERT INTO recruitments(club_id, title, content, end_time) VALUES(?, ?, ?, ?)", (club_id, title, content, end_time))
+        g.db.commit()
+        flash("已发布招新公告", "success")
+        return redirect(url_for("index"))
+
+    @app.get("/recruit/<int:rid>")
+    def recruitment_detail(rid: int):
+        # 自动检查并关闭过期的招新公告
+        _check_and_close_expired_recruitments(g.db)
+        rec = g.db.execute(
+            "SELECT r.*, c.name AS club_name, c.owner_id FROM recruitments r JOIN clubs c ON r.club_id = c.id WHERE r.id = ?",
+            (rid,),
+        ).fetchone()
+        if not rec:
+            flash("公告不存在", "error")
+            return redirect(url_for("index"))
+        apps = g.db.execute(
+            "SELECT id, applicant_name, contact, note, desired_role, status, created_at FROM applications WHERE recruitment_id = ? ORDER BY id DESC",
+            (rid,),
+        ).fetchall()
+        return render_template("recruit_detail.html", rec=rec, applications=apps)
+
+    @app.post("/recruit/<int:rid>/apply")
+    def apply_recruitment(rid: int):
+        rec = g.db.execute("SELECT r.id, r.is_open, r.club_id, c.status FROM recruitments r JOIN clubs c ON r.club_id = c.id WHERE r.id = ?", (rid,)).fetchone()
+        if not rec or rec["is_open"] != 1 or rec["status"] != "approved":
+            flash("公告不可报名", "error")
+            return redirect(url_for("index"))
+        name = (request.form.get("name") or "").strip()
+        contact = (request.form.get("contact") or "").strip()
+        note = (request.form.get("note") or "").strip()
+        desired_role = (request.form.get("desired_role") or "成员").strip() or "成员"
+        if not name or not contact:
+            flash("姓名与联系方式不能为空", "error")
+            return redirect(url_for("recruitment_detail", rid=rid))
+        g.db.execute(
+            "INSERT INTO applications(recruitment_id, applicant_name, contact, note, desired_role) VALUES(?, ?, ?, ?, ?)",
+            (rid, name, contact, note, desired_role),
+        )
+        g.db.commit()
+        flash("报名已提交，等待审核", "success")
+        return redirect(url_for("recruitment_detail", rid=rid))
+
+    @app.get("/recruit/<int:rid>/review")
+    def review_applications(rid: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        rec = g.db.execute("SELECT r.*, c.owner_id FROM recruitments r JOIN clubs c ON r.club_id = c.id WHERE r.id = ?", (rid,)).fetchone()
+        if not rec:
+            flash("公告不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or rec["owner_id"] == g.user["id"]):
+            flash("无权限审核报名", "error")
+            return redirect(url_for("index"))
+        apps = g.db.execute(
+            "SELECT id, applicant_name, contact, note, desired_role, status, created_at FROM applications WHERE recruitment_id = ? ORDER BY id DESC",
+            (rid,),
+        ).fetchall()
+        return render_template("applications_review.html", rec=rec, applications=apps)
+
+    @app.post("/applications/<int:app_id>/<action>")
+    def decide_application(app_id: int, action: str):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        row = g.db.execute(
+            "SELECT a.recruitment_id, a.applicant_name, a.desired_role, r.club_id, c.owner_id FROM applications a JOIN recruitments r ON a.recruitment_id = r.id JOIN clubs c ON r.club_id = c.id WHERE a.id = ?",
+            (app_id,),
+        ).fetchone()
+        if not row:
+            flash("报名不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or row["owner_id"] == g.user["id"]):
+            flash("无权限操作", "error")
+            return redirect(url_for("review_applications", rid=row["recruitment_id"]))
+        new_status = "approved" if action == "approve" else "rejected"
+        g.db.execute("UPDATE applications SET status = ? WHERE id = ?", (new_status, app_id))
+        # 自动加入成员（使用报名希望角色）
+        if new_status == "approved":
+            exists = g.db.execute(
+                "SELECT 1 FROM members WHERE club_id = ? AND name = ?",
+                (row["club_id"], row["applicant_name"]),
+            ).fetchone()
+            if not exists:
+                g.db.execute(
+                    "INSERT INTO members(club_id, name, role) VALUES(?, ?, ?)",
+                    (row["club_id"], row["applicant_name"], (row["desired_role"] or "成员")),
+                )
+            else:
+                g.db.execute(
+                    "UPDATE members SET role = ? WHERE club_id = ? AND name = ?",
+                    ((row["desired_role"] or "成员"), row["club_id"], row["applicant_name"]),
+                )
+        g.db.commit()
+        flash("已更新报名状态" + ("并加入成员" if new_status == "approved" else ""), "success")
+        return redirect(url_for("review_applications", rid=row["recruitment_id"]))
+
+    @app.post("/recruit/<int:rid>/settings")
+    def recruitment_settings(rid: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        rec = g.db.execute("SELECT r.id, r.club_id, c.owner_id FROM recruitments r JOIN clubs c ON r.club_id = c.id WHERE r.id = ?", (rid,)).fetchone()
+        if not rec:
+            flash("公告不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or rec["owner_id"] == g.user["id"]):
+            flash("无权限操作", "error")
+            return redirect(url_for("recruitment_detail", rid=rid))
+        end_time = (request.form.get("end_time") or "").strip()
+        # 验证结束时间格式
+        if end_time and not _parse_deadline(end_time):
+            flash("结束时间格式应为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM", "error")
+            return redirect(url_for("recruitment_detail", rid=rid))
+        g.db.execute("UPDATE recruitments SET end_time = ? WHERE id = ?", (end_time, rid))
+        g.db.commit()
+        flash("招新设置已更新", "success")
+        return redirect(url_for("recruitment_detail", rid=rid))
+
+    # ---------- Events ----------
+    @app.get("/events/new")
+    def new_event_form():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club_id = int(request.args.get("club_id", "0") or 0)
+        if not club_id:
+            flash("缺少 club_id", "error")
+            return redirect(url_for("list_clubs"))
+        club, err = _club_guard_for_owner(club_id)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("list_clubs"))
+        return render_template("event_new.html", club=club)
+
+    @app.post("/events")
+    def create_event():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club_id = int(request.form.get("club_id") or 0)
+        club, err = _club_guard_for_owner(club_id)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("list_clubs"))
+        title = (request.form.get("title") or "").strip()
+        content = (request.form.get("content") or "").strip()
+        start_time = (request.form.get("start_time") or "").strip()
+        location = (request.form.get("location") or "").strip()
+        if not title:
+            flash("标题不能为空", "error")
+            return redirect(url_for("new_event_form", club_id=club_id))
+        g.db.execute(
+            "INSERT INTO events(club_id, title, content, start_time, location, status) VALUES(?, ?, ?, ?, ?, 'pending')",
+            (club_id, title, content, start_time, location),
+        )
+        g.db.commit()
+        flash("已提交活动策划，等待审批", "success")
+        return redirect(url_for("list_clubs"))
+
+    @app.post("/events/<int:event_id>/approve")
+    def approve_event(event_id: int):
+        need_admin = admin_required()
+        if need_admin:
+            return need_admin
+        g.db.execute("UPDATE events SET status = 'approved' WHERE id = ?", (event_id,))
+        g.db.commit()
+        flash("活动已审批通过", "success")
+        return redirect(url_for("index"))
+
+    @app.get("/events/<int:event_id>")
+    def event_detail(event_id: int):
+        ev = g.db.execute(
+            "SELECT e.*, c.name AS club_name, c.owner_id FROM events e JOIN clubs c ON e.club_id = c.id WHERE e.id = ?",
+            (event_id,),
+        ).fetchone()
+        if not ev:
+            flash("活动不存在", "error")
+            return redirect(url_for("index"))
+        signups = g.db.execute(
+            "SELECT name, contact, note, created_at FROM event_signups WHERE event_id = ? ORDER BY id DESC",
+            (event_id,),
+        ).fetchall()
+        mats = g.db.execute(
+            "SELECT id, item_name, quantity, note, status, created_at FROM material_requests WHERE event_id = ? ORDER BY id DESC",
+            (event_id,),
+        ).fetchall()
+        count = g.db.execute("SELECT COUNT(1) AS n FROM event_signups WHERE event_id = ?", (event_id,)).fetchone()["n"]
+        remaining = None
+        if ev["capacity"] and ev["capacity"] > 0:
+            remaining = max(ev["capacity"] - count, 0)
+        rstat = g.db.execute("SELECT COUNT(1) AS n, COALESCE(AVG(rating),0) AS avg FROM event_ratings WHERE event_id = ?", (event_id,)).fetchone()
+        return render_template("event_detail.html", ev=ev, signups=signups, materials=mats, signup_count=count, remaining=remaining, rating_count=rstat["n"], rating_avg=rstat["avg"])
+
+    @app.post("/events/<int:event_id>/signup")
+    def event_signup(event_id: int):
+        ev = g.db.execute("SELECT id, status, is_open, capacity, deadline FROM events WHERE id = ?", (event_id,)).fetchone()
+        if not ev or ev["status"] != "approved":
+            flash("活动未开放报名", "error")
+            return redirect(url_for("index"))
+        if ev["is_open"] != 1:
+            flash("报名已关闭", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        # deadline check
+        dl = _parse_deadline(ev["deadline"])
+        if dl and datetime.now() > dl:
+            flash("已过报名截止时间", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        # capacity check
+        if ev["capacity"] and ev["capacity"] > 0:
+            count = g.db.execute("SELECT COUNT(1) AS n FROM event_signups WHERE event_id = ?", (event_id,)).fetchone()["n"]
+            if count >= ev["capacity"]:
+                flash("报名人数已达上限", "error")
+                return redirect(url_for("event_detail", event_id=event_id))
+        name = (request.form.get("name") or "").strip()
+        contact = (request.form.get("contact") or "").strip()
+        note = (request.form.get("note") or "").strip()
+        if not name or not contact:
+            flash("姓名与联系方式不能为空", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        g.db.execute("INSERT INTO event_signups(event_id, name, contact, note) VALUES(?, ?, ?, ?)", (event_id, name, contact, note))
+        g.db.commit()
+        flash("报名成功", "success")
+        return redirect(url_for("event_detail", event_id=event_id))
+
+    @app.post("/events/<int:event_id>/toggle")
+    def event_toggle(event_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        row = g.db.execute("SELECT e.id, e.is_open, c.owner_id FROM events e JOIN clubs c ON e.club_id = c.id WHERE e.id = ?", (event_id,)).fetchone()
+        if not row:
+            flash("活动不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or row["owner_id"] == g.user["id"]):
+            flash("无权限操作", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        new_val = 0 if row["is_open"] == 1 else 1
+        g.db.execute("UPDATE events SET is_open = ? WHERE id = ?", (new_val, event_id))
+        g.db.commit()
+        flash("已切换报名开关", "success")
+        return redirect(url_for("event_detail", event_id=event_id))
+
+    @app.post("/events/<int:event_id>/settings")
+    def event_settings(event_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        row = g.db.execute("SELECT e.id, c.owner_id FROM events e JOIN clubs c ON e.club_id = c.id WHERE e.id = ?", (event_id,)).fetchone()
+        if not row:
+            flash("活动不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or row["owner_id"] == g.user["id"]):
+            flash("无权限操作", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        cap_str = (request.form.get("capacity") or "0").strip()
+        try:
+            capacity = int(cap_str)
+            if capacity < 0:
+                capacity = 0
+        except ValueError:
+            capacity = 0
+        deadline = (request.form.get("deadline") or "").strip()
+        # validate deadline format if provided
+        if deadline and not _parse_deadline(deadline):
+            flash("截止时间格式应为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        g.db.execute("UPDATE events SET capacity = ?, deadline = ? WHERE id = ?", (capacity, deadline, event_id))
+        g.db.commit()
+        flash("活动设置已更新", "success")
+        return redirect(url_for("event_detail", event_id=event_id))
+
+    # ---------- Materials ----------
+    @app.get("/events/<int:event_id>/materials/new")
+    def new_material_request_form(event_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        ev = g.db.execute("SELECT e.id, c.owner_id FROM events e JOIN clubs c ON e.club_id = c.id WHERE e.id = ?", (event_id,)).fetchone()
+        if not ev:
+            flash("活动不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or ev["owner_id"] == g.user["id"]):
+            flash("无权限提交物资申请（需社团负责人或管理员）", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        return render_template("materials_request.html", event_id=event_id)
+
+    @app.post("/events/<int:event_id>/materials")
+    def create_material_request(event_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        ev = g.db.execute("SELECT e.id, c.owner_id FROM events e JOIN clubs c ON e.club_id = c.id WHERE e.id = ?", (event_id,)).fetchone()
+        if not ev:
+            flash("活动不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or ev["owner_id"] == g.user["id"]):
+            flash("无权限提交物资申请", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        item_name = (request.form.get("item_name") or "").strip()
+        quantity = int((request.form.get("quantity") or "1").strip() or 1)
+        note = (request.form.get("note") or "").strip()
+        if not item_name:
+            flash("物资名称不能为空", "error")
+            return redirect(url_for("new_material_request_form", event_id=event_id))
+        g.db.execute(
+            "INSERT INTO material_requests(event_id, item_name, quantity, note) VALUES(?, ?, ?, ?)",
+            (event_id, item_name, quantity, note),
+        )
+        g.db.commit()
+        flash("已提交物资申请，等待审批", "success")
+        return redirect(url_for("event_detail", event_id=event_id))
+
+    @app.get("/materials/review")
+    def review_materials():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club_id = int(request.args.get("club_id", "0") or 0)
+        if not club_id:
+            flash("缺少 club_id", "error")
+            return redirect(url_for("list_clubs"))
+        club, err = _club_guard_for_owner(club_id)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("list_clubs"))
+        rows = g.db.execute(
+            """
+            SELECT mr.id, mr.item_name, mr.quantity, mr.note, mr.status, mr.created_at,
+                   e.title AS event_title, e.id AS event_id
+            FROM material_requests mr
+            JOIN events e ON mr.event_id = e.id
+            WHERE e.club_id = ?
+            ORDER BY mr.id DESC
+            """,
+            (club_id,),
+        ).fetchall()
+        return render_template("materials_review.html", club=club, requests=rows)
+
+    @app.post("/materials/<int:req_id>/<action>")
+    def decide_material(req_id: int, action: str):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        row = g.db.execute(
+            "SELECT mr.id, e.club_id, c.owner_id FROM material_requests mr JOIN events e ON mr.event_id = e.id JOIN clubs c ON e.club_id = c.id WHERE mr.id = ?",
+            (req_id,),
+        ).fetchone()
+        if not row:
+            flash("申请不存在", "error")
+            return redirect(url_for("index"))
+        if not (g.user["is_admin"] or row["owner_id"] == g.user["id"]):
+            flash("无权限操作", "error")
+            return redirect(url_for("index"))
+        new_status = "approved" if action == "approve" else "rejected"
+        g.db.execute("UPDATE material_requests SET status = ? WHERE id = ?", (new_status, req_id))
+        g.db.commit()
+        flash("已更新物资申请状态", "success")
+        return redirect(url_for("review_materials", club_id=row["club_id"]))
+
+    # ---------- Members ----------
+    @app.get("/clubs/<int:club_id>/members")
+    def list_members(club_id: int):
+        club = g.db.execute("SELECT id, name, description, status FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if club["status"] != "approved":
+            flash("该社团未审批通过，暂不可管理成员", "error")
+            return redirect(url_for("list_clubs"))
+        members = g.db.execute(
+            "SELECT id, name, role FROM members WHERE club_id = ? ORDER BY id DESC",
+            (club_id,),
+        ).fetchall()
+        cstat = g.db.execute("SELECT COUNT(1) AS n, COALESCE(AVG(rating),0) AS avg FROM club_ratings WHERE club_id = ?", (club_id,)).fetchone()
+        return render_template("members.html", club=club, members=members, club_rating_count=cstat["n"], club_rating_avg=cstat["avg"])
+
+    @app.get("/clubs/<int:club_id>/members/new")
+    def new_member_form(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT id, name, owner_id, status FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if club["status"] != "approved":
+            flash("该社团未审批通过，暂不可添加成员", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限添加成员", "error")
+            return redirect(url_for("list_members", club_id=club_id))
+        return render_template("member_form.html", club=club)
+
+    @app.post("/clubs/<int:club_id>/members")
+    def create_member(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT owner_id, status FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club or club["status"] != "approved":
+            flash("社团不存在或未审批通过", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限添加成员", "error")
+            return redirect(url_for("list_members", club_id=club_id))
+        name = (request.form.get("name") or "").strip()
+        role = (request.form.get("role") or "成员").strip() or "成员"
+        if not name:
+            flash("成员姓名不能为空", "error")
+            return redirect(url_for("new_member_form", club_id=club_id))
+        g.db.execute("INSERT INTO members(club_id, name, role) VALUES(?, ?, ?)", (club_id, name, role))
+        g.db.commit()
+        flash("已添加成员", "success")
+        return redirect(url_for("list_members", club_id=club_id))
+
+    @app.get("/members/<int:member_id>/edit")
+    def edit_member_form(member_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        row = g.db.execute(
+            "SELECT m.id, m.name, m.role, m.club_id, c.owner_id FROM members m JOIN clubs c ON m.club_id = c.id WHERE m.id = ?",
+            (member_id,),
+        ).fetchone()
+        if not row:
+            flash("成员不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or row["owner_id"] == g.user["id"]):
+            flash("无权限编辑成员", "error")
+            return redirect(url_for("list_members", club_id=row["club_id"]))
+        return render_template("member_edit.html", member=row)
+
+    @app.post("/members/<int:member_id>/edit")
+    def edit_member(member_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        row = g.db.execute(
+            "SELECT m.id, m.club_id, c.owner_id FROM members m JOIN clubs c ON m.club_id = c.id WHERE m.id = ?",
+            (member_id,),
+        ).fetchone()
+        if not row:
+            flash("成员不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or row["owner_id"] == g.user["id"]):
+            flash("无权限编辑成员", "error")
+            return redirect(url_for("list_members", club_id=row["club_id"]))
+        name = (request.form.get("name") or "").strip()
+        role = (request.form.get("role") or "成员").strip() or "成员"
+        if not name:
+            flash("姓名不能为空", "error")
+            return redirect(url_for("edit_member_form", member_id=member_id))
+        g.db.execute("UPDATE members SET name = ?, role = ? WHERE id = ?", (name, role, member_id))
+        g.db.commit()
+        flash("成员信息已更新", "success")
+        return redirect(url_for("list_members", club_id=row["club_id"]))
+
+    @app.post("/members/<int:member_id>/delete")
+    def delete_member(member_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        row = g.db.execute("SELECT club_id FROM members WHERE id = ?", (member_id,)).fetchone()
+        if row is None:
+            flash("成员不存在", "error")
+            return redirect(url_for("list_clubs"))
+        club_id = row["club_id"]
+        club = g.db.execute("SELECT owner_id FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not (g.user["is_admin"] or (club and club["owner_id"] == g.user["id"])):
+            flash("无权限删除成员", "error")
+            return redirect(url_for("list_members", club_id=club_id))
+        g.db.execute("DELETE FROM members WHERE id = ?", (member_id,))
+        g.db.commit()
+        flash("已删除成员", "success")
+        return redirect(url_for("list_members", club_id=club_id))
+
+    # ---------- Finance ----------
+    @app.get("/finance/<int:club_id>")
+    def finance_dashboard(club_id: int):
+        club = g.db.execute("SELECT id, name, owner_id, status, available_amount FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        reqs = g.db.execute(
+            "SELECT id, title, amount, reason, status, request_date, created_at FROM finance_requests WHERE club_id = ? ORDER BY id DESC",
+            (club_id,),
+        ).fetchall()
+        exps = g.db.execute(
+            "SELECT id, title, amount, note, spent_at, created_at FROM expenses WHERE club_id = ? ORDER BY id DESC",
+            (club_id,),
+        ).fetchall()
+        return render_template("finance_dashboard.html", club=club, requests=reqs, expenses=exps)
+
+    @app.get("/finance/<int:club_id>/request/new")
+    def new_finance_request_form(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT id, owner_id, status, name FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限提交经费申请", "error")
+            return redirect(url_for("finance_dashboard", club_id=club_id))
+        return render_template("finance_request_new.html", club=club)
+
+    @app.post("/finance/<int:club_id>/request")
+    def create_finance_request(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT id, owner_id FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club or not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限提交经费申请", "error")
+            return redirect(url_for("finance_dashboard", club_id=club_id))
+        title = (request.form.get("title") or "").strip()
+        amount = float((request.form.get("amount") or "0").strip() or 0)
+        reason = (request.form.get("reason") or "").strip()
+        request_date = (request.form.get("request_date") or "").strip()
+        if not title or amount <= 0:
+            flash("标题不能为空且金额需大于0", "error")
+            return redirect(url_for("new_finance_request_form", club_id=club_id))
+        g.db.execute(
+            "INSERT INTO finance_requests(club_id, title, amount, reason, request_date) VALUES(?, ?, ?, ?, ?)",
+            (club_id, title, amount, reason, request_date),
+        )
+        g.db.commit()
+        flash("经费申请已提交，等待审批", "success")
+        return redirect(url_for("finance_dashboard", club_id=club_id))
+
+    @app.get("/finance/review")
+    def review_finance():
+        need_login = login_required()
+        if need_login:
+            return need_login
+        if not (g.user and g.user["is_admin"]):
+            flash("无权限访问", "error")
+            return redirect(url_for("index"))
+        rows = g.db.execute(
+            """
+            SELECT fr.id, fr.club_id, c.name AS club_name, fr.title, fr.amount, fr.reason, fr.status, fr.created_at
+            FROM finance_requests fr
+            JOIN clubs c ON fr.club_id = c.id
+            WHERE fr.status = 'pending'
+            ORDER BY fr.id DESC
+            """
+        ).fetchall()
+        return render_template("finance_review.html", requests=rows)
+
+    @app.post("/finance/request/<int:req_id>/<action>")
+    def decide_finance(req_id: int, action: str):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        if not (g.user and g.user["is_admin"]):
+            flash("无权限操作", "error")
+            return redirect(url_for("index"))
+        row = g.db.execute("SELECT id, club_id, amount, status FROM finance_requests WHERE id = ?", (req_id,)).fetchone()
+        if not row:
+            flash("申请不存在", "error")
+            return redirect(url_for("review_finance"))
+        new_status = "approved" if action == "approve" else "rejected"
+        # Only transition if currently pending
+        if row["status"] == "pending":
+            g.db.execute("UPDATE finance_requests SET status = ? WHERE id = ?", (new_status, req_id))
+            if new_status == "approved":
+                g.db.execute("UPDATE clubs SET available_amount = available_amount + ? WHERE id = ?", (row["amount"], row["club_id"]))
+            g.db.commit()
+            flash("经费申请状态已更新", "success")
+        else:
+            flash("该申请已处理", "error")
+        return redirect(url_for("review_finance"))
+
+    @app.get("/finance/<int:club_id>/expenses/new")
+    def new_expense_form(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT id, owner_id, name FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club or not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限新增支出", "error")
+            return redirect(url_for("finance_dashboard", club_id=club_id))
+        return render_template("expense_new.html", club=club)
+
+    @app.post("/finance/<int:club_id>/expenses")
+    def create_expense(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club = g.db.execute("SELECT id, owner_id, available_amount FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club or not (g.user["is_admin"] or club["owner_id"] == g.user["id"]):
+            flash("无权限新增支出", "error")
+            return redirect(url_for("finance_dashboard", club_id=club_id))
+        title = (request.form.get("title") or "").strip()
+        try:
+            amount = float((request.form.get("amount") or "0").strip() or 0)
+        except ValueError:
+            amount = 0.0
+        note = (request.form.get("note") or "").strip()
+        spent_at = (request.form.get("spent_at") or "").strip()
+        if not title or amount <= 0:
+            flash("标题不能为空且金额需大于0", "error")
+            return redirect(url_for("new_expense_form", club_id=club_id))
+        # Check available amount
+        if (club["available_amount"] or 0.0) < amount:
+            flash("可用额度不足，无法记支出", "error")
+            return redirect(url_for("new_expense_form", club_id=club_id))
+        g.db.execute(
+            "INSERT INTO expenses(club_id, title, amount, note, spent_at) VALUES(?, ?, ?, ?, ?)",
+            (club_id, title, amount, note, spent_at),
+        )
+        g.db.execute("UPDATE clubs SET available_amount = available_amount - ? WHERE id = ?", (amount, club_id))
+        g.db.commit()
+        flash("支出记录已保存并扣减可用额度", "success")
+        return redirect(url_for("finance_dashboard", club_id=club_id))
+
+    @app.get("/finance/<int:club_id>/report")
+    def finance_report(club_id: int):
+        club = g.db.execute("SELECT id, name, owner_id, available_amount FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        end = (request.args.get("end") or "").strip()
+        
+        # 构建筛选条件查询支出记录（只筛选结束日期）
+        # 筛选逻辑：优先使用 spent_at，如果为空则使用 created_at
+        params = [club_id]
+        base_where = "WHERE club_id = ?"
+        
+        # 只筛选结束日期
+        if end:
+            base_where += " AND (CASE WHEN spent_at IS NOT NULL AND spent_at != '' THEN date(spent_at) ELSE date(created_at) END) <= date(?)"
+            params.append(end)
+        
+        # 查询支出明细
+        query = f"SELECT id, title, amount, note, spent_at FROM expenses {base_where} ORDER BY CASE WHEN spent_at IS NOT NULL AND spent_at != '' THEN spent_at ELSE created_at END DESC"
+        rows = g.db.execute(query, tuple(params)).fetchall()
+        total = sum(r["amount"] for r in rows) if rows else 0.0
+        
+        # 计算筛选范围内的审批金额（截止到结束日期）
+        approved_params = [club_id]
+        approved_where = "WHERE club_id = ? AND status = 'approved'"
+        if end:
+            approved_where += " AND date(created_at) <= date(?)"
+            approved_params.append(end)
+        approved_row = g.db.execute(f"SELECT COALESCE(SUM(amount),0) AS s FROM finance_requests {approved_where}", tuple(approved_params)).fetchone()
+        approved = float(approved_row["s"]) if approved_row else 0.0
+        
+        # 计算筛选范围内的总支出（用于计算余额）
+        all_expenses_params = [club_id]
+        all_expenses_where = "WHERE club_id = ?"
+        if end:
+            all_expenses_where += " AND (CASE WHEN spent_at IS NOT NULL AND spent_at != '' THEN date(spent_at) ELSE date(created_at) END) <= date(?)"
+            all_expenses_params.append(end)
+        all_expenses_row = g.db.execute(f"SELECT COALESCE(SUM(amount),0) AS s FROM expenses {all_expenses_where}", tuple(all_expenses_params)).fetchone()
+        all_expenses_total = float(all_expenses_row["s"]) if all_expenses_row else 0.0
+        
+        # 余额 = 筛选范围内的审批总额 - 筛选范围内的支出总额
+        balance = (approved or 0.0) - (all_expenses_total or 0.0)
+        
+        # 可用额度：如果有日期筛选，显示筛选范围内的余额；否则显示当前实时余额
+        available = balance if end else (club["available_amount"] or 0.0)
+        
+        return render_template("finance_report.html", club=club, rows=rows, total=total, approved=approved, balance=balance, end=end, available=available, all_expenses_total=all_expenses_total)
+
+    @app.post("/finance/request/<int:req_id>/delete")
+    def delete_finance_request(req_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        # 查询经费申请
+        req = g.db.execute("SELECT fr.id, fr.club_id, fr.amount, fr.status, c.owner_id FROM finance_requests fr JOIN clubs c ON fr.club_id = c.id WHERE fr.id = ?", (req_id,)).fetchone()
+        if not req:
+            flash("经费申请不存在", "error")
+            return redirect(url_for("index"))
+        # 检查权限：只有管理员或社团负责人可以删除
+        if not (g.user["is_admin"] or req["owner_id"] == g.user["id"]):
+            flash("无权限删除该经费申请", "error")
+            return redirect(url_for("finance_dashboard", club_id=req["club_id"]))
+        # 如果是已审批的申请，需要扣减可用金额
+        if req["status"] == "approved":
+            g.db.execute("UPDATE clubs SET available_amount = available_amount - ? WHERE id = ?", (req["amount"], req["club_id"]))
+        # 删除经费申请
+        g.db.execute("DELETE FROM finance_requests WHERE id = ?", (req_id,))
+        g.db.commit()
+        flash("经费申请已删除" + ("，可用金额已扣减" if req["status"] == "approved" else ""), "success")
+        return redirect(url_for("finance_dashboard", club_id=req["club_id"]))
+
+    @app.post("/expenses/<int:expense_id>/delete")
+    def delete_expense(expense_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        # 查询支出记录
+        expense = g.db.execute("SELECT e.id, e.club_id, e.amount, c.owner_id FROM expenses e JOIN clubs c ON e.club_id = c.id WHERE e.id = ?", (expense_id,)).fetchone()
+        if not expense:
+            flash("支出记录不存在", "error")
+            return redirect(url_for("index"))
+        # 检查权限：只有管理员或社团负责人可以删除
+        if not (g.user["is_admin"] or expense["owner_id"] == g.user["id"]):
+            flash("无权限删除该支出记录", "error")
+            return redirect(url_for("finance_dashboard", club_id=expense["club_id"]))
+        # 删除支出记录并恢复可用金额
+        g.db.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+        g.db.execute("UPDATE clubs SET available_amount = available_amount + ? WHERE id = ?", (expense["amount"], expense["club_id"]))
+        g.db.commit()
+        flash("支出记录已删除，可用金额已恢复", "success")
+        return redirect(url_for("finance_dashboard", club_id=expense["club_id"]))
+
+    # ---------- Event Ratings ----------
+    @app.post("/events/<int:event_id>/rate")
+    def rate_event(event_id: int):
+        try:
+            rating = int((request.form.get("rating") or "").strip())
+        except ValueError:
+            rating = 0
+        note = (request.form.get("note") or "").strip()
+        if rating < 1 or rating > 5:
+            flash("评分需为1-5星", "error")
+            return redirect(url_for("event_detail", event_id=event_id))
+        g.db.execute("INSERT INTO event_ratings(event_id, rating, note) VALUES(?, ?, ?)", (event_id, rating, note))
+        g.db.commit()
+        flash("感谢你的活动评价", "success")
+        return redirect(url_for("event_detail", event_id=event_id))
+
+    # ---------- Club Ratings (members only) ----------
+    @app.post("/clubs/<int:club_id>/rate")
+    def rate_club(club_id: int):
+        # must be member of the club
+        member = g.db.execute("SELECT 1 FROM members WHERE club_id = ? AND name = ?", (club_id, (g.user["username"] if g.user else ""))).fetchone()
+        if not member:
+            flash("仅本社成员可评分", "error")
+            return redirect(url_for("list_members", club_id=club_id))
+        try:
+            rating = int((request.form.get("rating") or "").strip())
+        except ValueError:
+            rating = 0
+        note = (request.form.get("note") or "").strip()
+        if rating < 1 or rating > 5:
+            flash("评分需为1-5星", "error")
+            return redirect(url_for("list_members", club_id=club_id))
+        g.db.execute("INSERT INTO club_ratings(club_id, member_name, rating, note) VALUES(?, ?, ?, ?)", (club_id, g.user["username"], rating, note))
+        g.db.commit()
+        flash("感谢你的社团评价", "success")
+        return redirect(url_for("list_members", club_id=club_id))
+
+    # ---------- Messages ----------
+    @app.get("/messages")
+    def list_messages():
+        # Show all messages from approved clubs
+        messages = g.db.execute(
+            """
+            SELECT m.id, m.title, m.content, m.created_at, m.is_important, c.name AS club_name, c.id AS club_id
+            FROM messages m
+            JOIN clubs c ON m.club_id = c.id
+            WHERE c.status = 'approved'
+            ORDER BY m.is_important DESC, m.created_at DESC
+            LIMIT 50
+            """
+        ).fetchall()
+        return render_template("messages.html", messages=messages)
+
+    @app.get("/clubs/<int:club_id>/messages/new")
+    def new_message_form(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club, err = _club_guard_for_owner(club_id)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("list_clubs"))
+        return render_template("message_new.html", club=club)
+
+    @app.post("/clubs/<int:club_id>/messages")
+    def create_message(club_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        club, err = _club_guard_for_owner(club_id)
+        if err:
+            flash(err, "error")
+            return redirect(url_for("list_clubs"))
+        title = (request.form.get("title") or "").strip()
+        content = (request.form.get("content") or "").strip()
+        is_important = bool(request.form.get("is_important"))
+        if not title:
+            flash("消息标题不能为空", "error")
+            return redirect(url_for("new_message_form", club_id=club_id))
+        g.db.execute(
+            "INSERT INTO messages(club_id, title, content, is_important) VALUES(?, ?, ?, ?)",
+            (club_id, title, content, 1 if is_important else 0),
+        )
+        g.db.commit()
+        flash("消息已发布", "success")
+        return redirect(url_for("list_messages"))
+
+    @app.get("/clubs/<int:club_id>/messages")
+    def list_club_messages(club_id: int):
+        club = g.db.execute("SELECT id, name, owner_id, status FROM clubs WHERE id = ?", (club_id,)).fetchone()
+        if not club:
+            flash("社团不存在", "error")
+            return redirect(url_for("list_clubs"))
+        if club["status"] != "approved":
+            flash("该社团未审批通过", "error")
+            return redirect(url_for("list_clubs"))
+        messages = g.db.execute(
+            "SELECT id, title, content, created_at, is_important FROM messages WHERE club_id = ? ORDER BY is_important DESC, created_at DESC",
+            (club_id,),
+        ).fetchall()
+        can_manage = g.user and (g.user["is_admin"] or club["owner_id"] == g.user["id"])
+        return render_template("club_messages.html", club=club, messages=messages, can_manage=can_manage)
+
+    @app.get("/messages/<int:message_id>")
+    def message_detail(message_id: int):
+        message = g.db.execute(
+            "SELECT m.*, c.name AS club_name, c.id AS club_id FROM messages m JOIN clubs c ON m.club_id = c.id WHERE m.id = ?",
+            (message_id,),
+        ).fetchone()
+        if not message:
+            flash("消息不存在", "error")
+            return redirect(url_for("list_messages"))
+        return render_template("message_detail.html", message=message)
+
+    @app.post("/messages/<int:message_id>/delete")
+    def delete_message(message_id: int):
+        need_login = login_required()
+        if need_login:
+            return need_login
+        message = g.db.execute(
+            "SELECT m.id, m.club_id, c.owner_id FROM messages m JOIN clubs c ON m.club_id = c.id WHERE m.id = ?",
+            (message_id,),
+        ).fetchone()
+        if not message:
+            flash("消息不存在", "error")
+            return redirect(url_for("list_messages"))
+        if not (g.user["is_admin"] or message["owner_id"] == g.user["id"]):
+            flash("无权限删除消息", "error")
+            return redirect(url_for("message_detail", message_id=message_id))
+        g.db.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+        g.db.commit()
+        flash("消息已删除", "success")
+        return redirect(url_for("list_club_messages", club_id=message["club_id"]))
+
+
+if __name__ == "__main__":
+    app = create_app()
+    app.run(host="127.0.0.1", port=5000, debug=True)

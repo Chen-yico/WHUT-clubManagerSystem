@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}物资申请审核{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>物资申请审核 - {{ club.name }}</h2>
+		<table class="table">
+			<thead>
+				<tr><th>活动</th><th>物资</th><th>数量</th><th>备注</th><th>状态</th><th>操作</th></tr>
+			</thead>
+			<tbody>
+				{% for r in requests %}
+				<tr>
+					<td><a href="{{ url_for('event_detail', event_id=r.event_id) }}">{{ r.event_title }}</a></td>
+					<td>{{ r.item_name }}</td>
+					<td>{{ r.quantity }}</td>
+					<td>{{ r.note }}</td>
+					<td>{{ r.status }}</td>
+					<td>
+						<form method="post" action="{{ url_for('decide_material', req_id=r.id, action='approve') }}" style="display:inline;">
+							<button class="button primary" type="submit">通过</button>
+						</form>
+						<form method="post" action="{{ url_for('decide_material', req_id=r.id, action='reject') }}" style="display:inline;">
+							<button class="button danger" type="submit">拒绝</button>
+						</form>
+					</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="6">暂无物资申请</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+

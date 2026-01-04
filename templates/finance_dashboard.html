@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block title %}财务总览 - {{ club.name }}{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>{{ club.name }} - 财务总览</h2>
+		<p><strong>可用额度：</strong>{{ '%.2f'|format(club.available_amount or 0) }} 元</p>
+		<p>
+			<a class="button ghost" href="{{ url_for('new_finance_request_form', club_id=club.id) }}">提交经费申请</a>
+			<a class="button ghost" href="{{ url_for('new_expense_form', club_id=club.id) }}">新增支出记录</a>
+			<a class="button primary" href="{{ url_for('finance_report', club_id=club.id) }}">查看财务报表</a>
+		</p>
+	</div>
+
+	<div class="card">
+		<h3>经费申请</h3>
+		<table class="table">
+			<thead>
+				<tr><th>标题</th><th>金额</th><th>事由</th><th>状态</th><th>申请日期</th><th>创建时间</th>{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}<th>操作</th>{% endif %}</tr>
+			</thead>
+			<tbody>
+				{% for r in requests %}
+				<tr>
+					<td>{{ r.title }}</td>
+					<td>{{ '%.2f'|format(r.amount) }}</td>
+					<td>{{ r.reason }}</td>
+					<td>{{ r.status }}</td>
+					<td>{{ r.request_date or '-' }}</td>
+					<td>{{ r.created_at }}</td>
+					{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}
+					<td>
+						<form method="post" action="{{ url_for('delete_finance_request', req_id=r.id) }}" style="display:inline;" onsubmit="return confirm('确认删除该经费申请？{% if r.status == 'approved' %}删除后将扣减可用金额。{% endif %}');">
+							<button class="button danger" type="submit">删除</button>
+						</form>
+					</td>
+					{% endif %}
+				</tr>
+				{% else %}
+				<tr><td colspan="{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}7{% else %}6{% endif %}">暂无经费申请</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+
+	<div class="card">
+		<h3>支出记录</h3>
+		<table class="table">
+			<thead>
+				<tr><th>标题</th><th>金额</th><th>备注</th><th>支出日期</th><th>记录时间</th>{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}<th>操作</th>{% endif %}</tr>
+			</thead>
+			<tbody>
+				{% for e in expenses %}
+				<tr>
+					<td>{{ e.title }}</td>
+					<td>{{ '%.2f'|format(e.amount) }}</td>
+					<td>{{ e.note }}</td>
+					<td>{{ e.spent_at or '-' }}</td>
+					<td>{{ e.created_at }}</td>
+					{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}
+					<td>
+						<form method="post" action="{{ url_for('delete_expense', expense_id=e.id) }}" style="display:inline;" onsubmit="return confirm('确认删除该支出记录？删除后将恢复可用金额。');">
+							<button class="button danger" type="submit">删除</button>
+						</form>
+					</td>
+					{% endif %}
+				</tr>
+				{% else %}
+				<tr><td colspan="{% if g.user and (g.user.is_admin or club.owner_id == g.user.id) %}6{% else %}5{% endif %}">暂无支出记录</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+{% endblock %}

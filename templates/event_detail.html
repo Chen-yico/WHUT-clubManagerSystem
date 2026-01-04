@@ -1,0 +1,102 @@
+{% extends 'base.html' %}
+{% block title %}活动详情 - {{ ev.title }}{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>{{ ev.title }}</h2>
+		<p><strong>社团：</strong>{{ ev.club_name }} | <strong>时间：</strong>{{ ev.start_time or '-' }} | <strong>地点：</strong>{{ ev.location or '-' }} | <strong>状态：</strong>{{ ev.status }}</p>
+		<p>
+			<strong>报名容量：</strong>{% if ev.capacity and ev.capacity > 0 %}{{ signup_count }}/{{ ev.capacity }}（剩余：{{ remaining }}）{% else %}不限{% endif %}
+			| <strong>截止时间：</strong>{{ ev.deadline or '无' }}
+			| <strong>报名开关：</strong>{% if ev.is_open %}开启{% else %}关闭{% endif %}
+		</p>
+		<p><strong>满意度平均：</strong>{{ '%.2f'|format(rating_avg or 0) }} / 5（{{ rating_count }} 人评分）</p>
+		<pre style="white-space:pre-wrap; font-family: inherit;">{{ ev.content }}</pre>
+		{% if g.user %}
+		<form method="post" action="{{ url_for('rate_event', event_id=ev.id) }}" style="margin-top:8px;">
+			<label>为本次活动打分（1-5）：</label>
+			<input class="input" name="rating" type="number" min="1" max="5" required style="max-width:120px; display:inline-block;" />
+			<input class="input" name="note" placeholder="点评（可选）" style="max-width:320px; display:inline-block;" />
+			<button class="button primary" type="submit">提交评分</button>
+		</form>
+		{% endif %}
+		{% if g.user and (g.user.is_admin or ev.owner_id == g.user.id) %}
+			<form method="post" action="{{ url_for('event_toggle', event_id=ev.id) }}" style="display:inline;">
+				<button class="button ghost" type="submit">切换报名开关</button>
+			</form>
+			<form method="post" action="{{ url_for('event_settings', event_id=ev.id) }}" style="display:inline; margin-left:8px;">
+				<input class="input" style="max-width:120px; display:inline-block;" name="capacity" placeholder="容量(0不限)" value="{{ ev.capacity }}" />
+				<input class="input" style="max-width:200px; display:inline-block;" name="deadline" placeholder="YYYY-MM-DD 或 YYYY-MM-DD HH:MM" value="{{ ev.deadline }}" />
+				<button class="button primary" type="submit">更新设置</button>
+			</form>
+		{% endif %}
+	</div>
+
+	<div class="card">
+		<h3>活动报名</h3>
+		<form method="post" action="{{ url_for('event_signup', event_id=ev.id) }}">
+			<div class="row">
+				<div>
+					<label>姓名</label>
+					<input class="input" name="name" required />
+				</div>
+				<div>
+					<label>联系方式</label>
+					<input class="input" name="contact" required />
+				</div>
+			</div>
+			<div style="margin-top:12px;">
+				<label>备注</label>
+				<textarea class="textarea" name="note" rows="3"></textarea>
+			</div>
+			<div style="margin-top:12px;">
+				<button class="button primary" type="submit">提交报名</button>
+			</div>
+		</form>
+		<h4 style="margin-top:16px;">近期报名</h4>
+		<table class="table">
+			<thead>
+				<tr><th>姓名</th><th>联系方式</th><th>备注</th><th>时间</th></tr>
+			</thead>
+			<tbody>
+				{% for s in signups %}
+				<tr>
+					<td>{{ s.name }}</td>
+					<td>{{ s.contact }}</td>
+					<td>{{ s.note }}</td>
+					<td>{{ s.created_at }}</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="4">暂无报名</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+
+	{% if g.user and (g.user.is_admin or ev.owner_id == g.user.id) %}
+	<div class="card">
+		<h3>物资申请</h3>
+		<p>
+			<a class="button ghost" href="{{ url_for('new_material_request_form', event_id=ev.id) }}">提交物资申请</a>
+		</p>
+		<h4>已提交的物资申请</h4>
+		<table class="table">
+			<thead>
+				<tr><th>物资</th><th>数量</th><th>备注</th><th>状态</th><th>时间</th></tr>
+			</thead>
+			<tbody>
+				{% for m in materials %}
+				<tr>
+					<td>{{ m.item_name }}</td>
+					<td>{{ m.quantity }}</td>
+					<td>{{ m.note }}</td>
+					<td>{{ m.status }}</td>
+					<td>{{ m.created_at }}</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="5">暂无物资申请</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	{% endif %}
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block title %}成员列表 - {{ club.name }}{% endblock %}
+{% block content %}
+	<div class="card">
+		<h2>{{ club.name }} 的成员</h2>
+		<p>{{ club.description }}</p>
+		<p><strong>社团评分平均：</strong>{{ '%.2f'|format(club_rating_avg or 0) }} / 5（{{ club_rating_count }} 人评分）</p>
+		{% if g.user %}
+		<form method="post" action="{{ url_for('rate_club', club_id=club.id) }}" style="margin:8px 0;">
+			<label>为本社评分（1-5）：</label>
+			<input class="input" name="rating" type="number" min="1" max="5" required style="max-width:120px; display:inline-block;" />
+			<input class="input" name="note" placeholder="点评（可选）" style="max-width:320px; display:inline-block;" />
+			<button class="button primary" type="submit">提交评分</button>
+		</form>
+		{% endif %}
+		<p>
+			<a class="button primary" href="{{ url_for('new_member_form', club_id=club.id) }}">+ 添加成员</a>
+			<a class="button ghost" href="{{ url_for('list_clubs') }}">返回社团列表</a>
+		</p>
+		<table class="table">
+			<thead>
+				<tr><th>ID</th><th>姓名</th><th>职务</th><th>操作</th></tr>
+			</thead>
+			<tbody>
+				{% for m in members %}
+				<tr>
+					<td>{{ m.id }}</td>
+					<td>{{ m.name }}</td>
+					<td>{{ m.role }}</td>
+					<td>
+						<a class="button ghost" href="{{ url_for('edit_member_form', member_id=m.id) }}">编辑</a>
+						<form method="post" action="{{ url_for('delete_member', member_id=m.id) }}" style="display:inline;" onsubmit="return confirm('确认删除该成员？');">
+							<button class="button danger" type="submit">删除</button>
+						</form>
+					</td>
+				</tr>
+				{% else %}
+				<tr><td colspan="4">暂无成员，点击“添加成员”。</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+{% endblock %}
+
+
