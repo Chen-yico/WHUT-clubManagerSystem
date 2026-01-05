@@ -56,27 +56,6 @@
 - 活动评价（1-5星）
 - 社团评价（成员专属）
 
-## 初次使用
-
-1. **注册账号**
-
-   - 访问系统首页
-   - 点击"注册"按钮
-   - 填写用户名和密码
-
-2. **设置管理员**（仅首次需要）
-
-   ```bash
-   # 使用 Python 脚本
-   python -c "import sqlite3; conn = sqlite3.connect('instance/clubmgr.db'); conn.execute('UPDATE users SET is_admin = 1 WHERE username = \"你的用户名\"'); conn.commit(); conn.close()"
-   ```
-
-3. **开始使用**
-
-   - 登录系统
-   - 创建社团（管理员审批后生效）
-   - 开始管理社团事务
-
 ## 目录结构
 
 ```
